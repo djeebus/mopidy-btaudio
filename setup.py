@@ -21,7 +21,7 @@ setup(
     ],
     entry_points={
         'mopidy.ext': [
-            'btaudio = mopidy_btaudio:BtAudioExtension',
+            'btaudio = mopidy_btaudio.extension:BtAudioExtension',
         ],
     },
     package_data={
