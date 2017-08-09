@@ -40,7 +40,7 @@ class BlueAgent(dbus.service.Object):
     pin_code = None
 
     def __init__(self, pin_code):
-        dbus.service.Object.__init__(
+        super(BlueAgent, self).__init__(
             self, dbus.SystemBus(), BlueAgent.AGENT_PATH,
         )
         self.pin_code = pin_code

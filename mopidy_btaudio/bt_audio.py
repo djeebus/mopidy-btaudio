@@ -49,7 +49,6 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
         handlers = {
             'org.bluez.Adapter1': self.on_adapter_added,
             'org.bluez.MediaPlayer1': self.on_media_player_added,
-            'org.bluez.MediaTransport1': self.on_media_transport_added,
         }
 
         found = False
@@ -76,7 +75,6 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
         handlers = {
             'org.bluez.Adapter1': self.on_adapter_changed,
             'org.bluez.MediaPlayer1': self.on_media_player_changed,
-            'org.bluez.MediaTransport1': self.on_media_transport_changed,
         }
 
         handler = handlers.get(interface)
@@ -86,7 +84,6 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
         handlers = {
             'org.bluez.Adapter1': self.on_adapter_removed,
             'org.bluez.MediaPlayer1': self.on_media_player_removed,
-            'org.bluez.MediaTransport1': self.on_media_transport_removed,
         }
 
         for interface in interfaces:
@@ -94,50 +91,59 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
             handler and handler(path)
 
     def on_media_player_added(self, interface, props):
+        logger.info('media player added')
         media_player_status = props.get('Status')
         if media_player_status:
-            self._on_bt_media_player_state(media_player_status)
+            self._on_bt_media_player_state(
+                interface.object_path, media_player_status,
+            )
 
     def on_media_player_changed(self, dbus_ob, changed_props, invalid_props):
         bt_status = changed_props.get('Status')
         if bt_status:
-            self._on_bt_media_player_state(bt_status)
-
-    _bt_is_playing = None
-    _mopidy_was_playing = None
-
-    def _on_bt_media_player_state(self, state):
-        if state == 'playing':
-            self._bt_is_playing = True
-
-            mopidy_status = self.core.playback.get_state().get()
-            if mopidy_status == PlaybackState.PLAYING:
-                self._mopidy_was_playing = True
-                self.core.playback.pause()
-            return
-
-        if state in ['paused', 'stopped', 'error']:
-            if self._mopidy_was_playing:
-                self._bt_is_playing = False
-                self.core.playback.play()
-                self._mopidy_was_playing = None
-            return
+            logger.info('media player status changed')
+            self._on_bt_media_player_state(dbus_ob.object_path, bt_status)
 
     def on_media_player_removed(self, path):
         logger.info('removing media player')
-        self._on_bt_media_player_state('stopped')
+        self._on_bt_media_player_state(path, 'stopped')
 
-    def on_media_transport_added(self, interface, props):
-        logger.info('added audio transport')
+    _bt_is_playing = set()
+    _mopidy_was_playing = False
 
-    def on_media_transport_changed(
-        self, dbus_ob, changed_props, invalid_props,
-    ):
-        logger.info("media transport changed: \nchanged: %s\ninvalid: %s"
-                    % (changed_props, invalid_props))
+    def _on_bt_media_player_state(self, path, state):
+        logger.info('media player %s = %s', path, state)
 
-    def on_media_transport_removed(self, path):
-        logger.info('removing audio transport')
+        if state == 'playing':
+            self._bt_is_playing.add(path)
+
+        if state in ['paused', 'stopped', 'error']:
+            path = str(path)
+            if path in self._bt_is_playing:
+                self._bt_is_playing.remove(path)
+
+        self.process_state()
+
+    def process_state(self):
+        if self._bt_is_playing:
+            # pause mopidy, if necessary
+            self._pause_mopidy()
+        else:
+            # mopidy resume, if necessary
+            self._resume_mopidy()
+
+    def _pause_mopidy(self):
+        mopidy_status = self.core.playback.get_state().get()
+        if mopidy_status == PlaybackState.PLAYING:
+            logger.info('pausing playback')
+            self._mopidy_was_playing = True
+            self.core.playback.pause()
+
+    def _resume_mopidy(self):
+        if self._mopidy_was_playing:
+            logger.info('resuming playback')
+            self.core.playback.play()
+            self._mopidy_was_playing = False
 
     def on_adapter_added(self, adapter, props):
         logger.info('initializing "%s"' % adapter.object_path)
@@ -149,8 +155,7 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
         self.adapters[adapter.object_path] = adapter
 
     def on_adapter_changed(self, dbus_ob, changed_props, invalid_props):
-        logger.info("media transport changed: \nchanged: %s\ninvalid: %s"
-                    % (changed_props, invalid_props))
+        logger.info("adapter changed")
 
     def on_adapter_removed(self, path):
         logger.info('removing adapter')
@@ -173,8 +178,4 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
         self.adapters.clear()
 
     def playback_state_changed(self, old_state, new_state):
-        if new_state == PlaybackState.PLAYING:
-            if self._bt_is_playing:
-                logger.info('pausing mopidy, bluetooth is active')
-                self._mopidy_was_playing = True
-                self.core.playback.pause()
+        self.process_state()
