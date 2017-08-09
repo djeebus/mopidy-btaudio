@@ -1,5 +1,5 @@
-import collections
 import dbus
+import functools
 import logging
 import pykka
 
@@ -9,46 +9,6 @@ from mopidy.core.actor import Core
 from mopidy_btaudio.agent import BlueAgent
 
 logger = logging.getLogger('mopidy-btaudio')
-
-
-class BluetoothAdapter:
-    def __init__(self, path, adapter):
-        self.path = path
-        self.adapter = adapter
-
-
-class BluetoothController:
-    def __init__(self):
-        self._added_handlers = collections.defaultdict(list)
-        self._interface_map = collections.defaultdict(list)
-
-    def add_on_interface_added_handler(self, interface, handler):
-        self._interface_map[interface].append(handler)
-
-    def _add_object(self, path, interfaces):
-        for interface in interfaces:
-            self._interface_map[interface].append(path)
-
-            handler = self._added_handlers.get(interface)
-            handler and handler(path)
-
-    def _remove_object(self, path, interfaces):
-        for interface in interfaces:
-            self._interface_map[interface].remove(path)
-
-    adapter_name = 'org.bluez.Adapter1'
-
-    @property
-    def adapters(self):
-        dbus_objects = (
-            self._bus.get_object('org.bluez', path)
-            for path in self._interface_map.get(self.adapter_name)
-        )
-
-        return [
-            dbus.Interface(dbus_object, self.adapter_name)
-            for dbus_object in dbus_objects
-        ]
 
 
 class BtAudioController(pykka.ThreadingActor, CoreListener):
@@ -74,21 +34,21 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
 
         managed_objects = object_manager.GetManagedObjects()
         for path, interfaces in managed_objects.items():
-            self._dbus_object_added(path, interfaces)
+            self.on_interfaces_added(path, interfaces)
 
         object_manager.connect_to_signal(
-            'InterfacesAdded', self._dbus_object_added,
+            'InterfacesAdded', self.on_interfaces_added,
         )
 
         object_manager.connect_to_signal(
-            'InterfacesRemoved', self._dbus_object_removed,
+            'InterfacesRemoved', self.on_interfaces_removed,
         )
 
-    def _dbus_object_added(self, path, interfaces):
+    def on_interfaces_added(self, path, interfaces):
         handlers = {
             'org.bluez.Adapter1': self.on_adapter_added,
             'org.bluez.MediaPlayer1': self.on_media_player_added,
-            'org.bluez.MediaTransport1': self.on_audio_transport_added,
+            'org.bluez.MediaTransport1': self.on_media_transport_added,
         }
 
         found = False
@@ -103,13 +63,56 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
             adapter = dbus.Interface(
                 dbus_ob, 'org.freedesktop.DBus.Properties',
             )
-            
+
+            adapter.connect_to_signal(
+                'PropertiesChanged',
+                functools.partial(self.on_properties_changed, dbus_ob),
+            )
+
+    def on_properties_changed(
+        self, dbus_ob, interface, changed_props, invalid_props,
+    ):
+        handlers = {
+            'org.bluez.Adapter1': self.on_adapter_changed,
+            'org.bluez.MediaPlayer1': self.on_media_player_changed,
+            'org.bluez.MediaTransport1': self.on_media_transport_changed,
+        }
+
+        handler = handlers.get(interface)
+        handler and handler(dbus_ob, changed_props, invalid_props)
+
+    def on_interfaces_removed(self, path, interfaces):
+        handlers = {
+            'org.bluez.Adapter1': self.on_adapter_removed,
+            'org.bluez.MediaPlayer1': self.on_media_player_removed,
+            'org.bluez.MediaTransport1': self.on_media_transport_removed,
+        }
+
+        for interface in interfaces:
+            handler = handlers.get(interface)
+            handler and handler(path)
 
     def on_media_player_added(self, interface):
         logger.info('added media player')
 
-    def on_audio_transport_added(self, interface):
+    def on_media_player_changed(self, dbus_ob, changed_props, invalid_props):
+        logger.info('media player changed: \nchanged: %s\ninvalid: %s'
+                    % (changed_props, invalid_props))
+
+    def on_media_player_removed(self, path):
+        logger.info('removing media player')
+
+    def on_media_transport_added(self, interface):
         logger.info('added audio transport')
+
+    def on_media_transport_changed(
+        self, dbus_ob, changed_props, invalid_props,
+    ):
+        logger.info("media transport changed: \nchanged: %s\ninvalid: %s"
+                    % (changed_props, invalid_props))
+
+    def on_media_transport_removed(self, path):
+        logger.info('removing audio transport')
 
     def on_adapter_added(self, adapter):
         logger.info('initializing "%s"' % adapter.object_path)
@@ -120,28 +123,14 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
 
         self.adapters[adapter.object_path] = adapter
 
-    def _dbus_object_removed(self, path, interfaces):
-        handlers = {
-            'org.bluez.Adapter1': self.on_adapter_removed,
-            'org.bluez.MediaPlayer1': self.on_media_player_removed,
-            'org.bluez.MediaTransport1': self.on_audio_transport_removed,
-        }
-
-        for interface in interfaces:
-            handler = handlers.get(interface)
-            handler and handler(path)
+    def on_adapter_changed(self, dbus_ob, changed_props, invalid_props):
+        logger.info("media transport changed: \nchanged: %s\ninvalid: %s"
+                    % (changed_props, invalid_props))
 
     def on_adapter_removed(self, path):
         logger.info('removing adapter')
         if path in self.adapters:
             del self.adapters[path]
-
-    def on_media_player_removed(self, path):
-        self.on
-        logger.info('removing media player')
-
-    def on_audio_transport_removed(self, path):
-        logger.info('removing audio transport')
 
     def on_start(self):
         self._initialize_dbus()
