@@ -1,3 +1,4 @@
+import collections
 import dbus
 import functools
 import logging
@@ -17,12 +18,31 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
         pykka.ThreadingActor.__init__(self)
 
         self.adapters = {}
+        self._devices_connected = set()
 
         self.config = config
         self.core = core  # type: Core
 
         self.agent = None  # type: BlueAgent
         self.bus = None  # type: dbus.SystemBus
+
+        self._added_handlers = {
+            'org.bluez.Adapter1': self.on_adapter_added,
+            'org.bluez.Device1': self.on_device_added,
+            'org.bluez.MediaPlayer1': self.on_media_player_added,
+        }
+
+        self._changed_handlers = {
+            'org.bluez.Adapter1': self.on_adapter_changed,
+            'org.bluez.Device1': self.on_device_changed,
+            'org.bluez.MediaPlayer1': self.on_media_player_changed,
+        }
+
+        self._removed_handlers = {
+            'org.bluez.Adapter1': self.on_adapter_removed,
+            'org.bluez.Device1': self.on_device_removed,
+            'org.bluez.MediaPlayer1': self.on_media_player_removed,
+        }
 
     def _initialize_dbus(self):
         bus = dbus.SystemBus()
@@ -46,18 +66,13 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
         )
 
     def on_interfaces_added(self, path, interface_names):
-        handlers = {
-            'org.bluez.Adapter1': self.on_adapter_added,
-            'org.bluez.MediaPlayer1': self.on_media_player_added,
-        }
-
         found = False
         dbus_ob = self.bus.get_object('org.bluez', path)
         props_interface = dbus.Interface(
             dbus_ob, 'org.freedesktop.DBus.Properties',
         )
         for interface_name in interface_names:
-            handler = handlers.get(interface_name)
+            handler = self._added_handlers.get(interface_name)
             if handler:
                 adapter = dbus.Interface(dbus_ob, interface_name)
                 adapter_props = props_interface.GetAll(interface_name)
@@ -72,23 +87,64 @@ class BtAudioController(pykka.ThreadingActor, CoreListener):
     def on_properties_changed(
         self, dbus_ob, interface, changed_props, invalid_props,
     ):
-        handlers = {
-            'org.bluez.Adapter1': self.on_adapter_changed,
-            'org.bluez.MediaPlayer1': self.on_media_player_changed,
-        }
-
-        handler = handlers.get(interface)
+        handler = self._changed_handlers.get(interface)
         handler and handler(dbus_ob, changed_props, invalid_props)
 
     def on_interfaces_removed(self, path, interfaces):
-        handlers = {
-            'org.bluez.Adapter1': self.on_adapter_removed,
-            'org.bluez.MediaPlayer1': self.on_media_player_removed,
-        }
-
         for interface in interfaces:
-            handler = handlers.get(interface)
+            handler = self._removed_handlers.get(interface)
             handler and handler(path)
+
+    def on_device_added(self, interface, props):
+        logger.info('device added: %s', interface.object_path)
+        connected = props.get('Connected')
+        if connected:
+            path = str(interface.object_path)
+            self._add_connected_device(path)
+
+    def on_device_changed(self, dbus_ob, changed_props, invalid_props):
+        logger.info('adapter changed: %s', changed_props)
+        if 'Connected' not in changed_props:
+            return
+
+        connected = changed_props['Connected']
+        path = str(dbus_ob.object_path)
+        if connected:
+            self._add_connected_device(path)
+        else:
+            self._remove_connected_device(path)
+
+    def on_device_removed(self, path):
+        logger.info('device removed: %s', path)
+        self._remove_connected_device(path)
+
+    def _add_connected_device(self, path):
+        logger.info('device connected: %s', path)
+        self._devices_connected.add(path)
+        self._connections_updated()
+
+    def _remove_connected_device(self, path):
+        if path in self._devices_connected:
+            logger.info('device disconnected: %s', path)
+            self._devices_connected.remove(path)
+            self._connections_updated()
+
+    def _connections_updated(self):
+        if self._devices_connected:
+            self._set_discoverable(False)
+        else:
+            self._set_discoverable(True)
+
+    def _set_discoverable(self, enable):
+        for path, adapter in self.adapters.items():
+            discoverable = getattr(adapter, 'Discoverable')
+            if discoverable == enable:
+                logger.info('discoverable already set to %s [%s]',
+                            enable, path)
+                continue
+
+            logger.info('setting discoverable to %s', enable)
+            setattr(adapter, 'Discoverable', discoverable)
 
     def on_media_player_added(self, interface, props):
         logger.info('media player added')

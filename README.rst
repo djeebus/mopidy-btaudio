@@ -4,5 +4,7 @@ Mopidy-BtAudio
 
 Mopidy extension that plays audio from a2dp sources
 
-- Pauses music when a2dp sources are connected
-- Plays music when the source disconnects again
+- Enables discoverable mode when no devices are connected
+- Auto accepts pairing requests
+- Pauses music when bluetooth device starts playing
+- Plays music when the source stops playing
