@@ -106,3 +106,11 @@ class BlueAgent(dbus.service.Object):
         )
         manager.RegisterAgent(BlueAgent.AGENT_PATH, BlueAgent.CAPABILITY)
         manager.RequestDefaultAgent(BlueAgent.AGENT_PATH)
+
+    def unregister(self):
+        bus = dbus.SystemBus()
+        manager = dbus.Interface(
+            bus.get_object(SERVICE_NAME, "/org/bluez"),
+            "org.bluez.AgentManager1",
+        )
+        manager.UnregisterAgent(BlueAgent.AGENT_PATH)
