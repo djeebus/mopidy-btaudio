@@ -175,17 +175,20 @@ class MediaPlayerManager(ObjectManager):
         super(MediaPlayerManager, self).__init__(bus)
         self.core = core
 
-    def _added(self, dbus_object):
+    def _get_media_player_status(self, dbus_object):
         int_ob = dbus.Interface(dbus_object, dbus_properties_interface_name)
-        media_player_status = int_ob.Get(self.interface, 'Status')
+        all_props = int_ob.GetAll(self.interface)
+        return all_props.get('Status', 'stopped')
+
+    def _added(self, dbus_object):
+        media_player_status = self._get_media_player_status(dbus_object)
         if media_player_status:
             self._on_bt_media_player_state(
                 dbus_object.object_path, media_player_status,
             )
 
     def _changed(self, dbus_object):
-        int_ob = dbus.Interface(dbus_object, dbus_properties_interface_name)
-        media_player_status = int_ob.Get(self.interface, 'Status')
+        media_player_status = self._get_media_player_status(dbus_object)
         if media_player_status:
             self._on_bt_media_player_state(
                 dbus_object.object_path, media_player_status,
