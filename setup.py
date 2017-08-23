@@ -18,6 +18,7 @@ setup(
         'bt_manager >= 0.3.0',
         'Mopidy >= 2.0',
         'Pykka >= 1.2',
+        'pynetlinux',
     ],
     entry_points={
         'mopidy.ext': [

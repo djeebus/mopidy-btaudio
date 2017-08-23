@@ -2,6 +2,7 @@ import dbus
 import functools
 import logging
 import pykka
+import pynetlinux.ifconfig
 
 from mopidy.audio.constants import PlaybackState
 from mopidy.core import CoreListener
@@ -70,7 +71,6 @@ class AdapterManager(ObjectManager):
         self.configure_adapter(dbus_object)
 
     def configure_adapter(self, dbus_object):
-        print('--- configuring adapter ---')
         int_ob = dbus.Interface(dbus_object, dbus_properties_interface_name)
 
         int_ob.Set(self.interface, 'Alias', self.name)
@@ -101,11 +101,17 @@ class AdapterManager(ObjectManager):
 class DeviceManager(ObjectManager):
     interface = 'org.bluez.Device1'
 
-    def __init__(self, bus, adapter_manager):
+    def __init__(self, bus, adapter_manager, interfaces_to_disable):
         super(DeviceManager, self).__init__(bus)
 
-        self._devices_connected = set()
+        self._interfaces_to_disable = [
+            pynetlinux.ifconfig.Interface(interface.encode('ascii'))
+            for interface in interfaces_to_disable
+        ]
         self._adapter_manager = adapter_manager
+
+        self._interfaces_are_up = None
+        self._devices_connected = set()
 
     def _added(self, dbus_object):
         int_ob = dbus.Interface(dbus_object, dbus_properties_interface_name)
@@ -135,7 +141,6 @@ class DeviceManager(ObjectManager):
             int_ob = dbus.Interface(dbus_ob, self.interface)
 
             try:
-                print('--- connecting to %s ---' % dbus_ob.object_path)
                 int_ob.Connect()
             except dbus.DBusException as e:
                 dbus_name = e.get_dbus_name()
@@ -148,21 +153,39 @@ class DeviceManager(ObjectManager):
                 raise
 
     def _remove_connected_device(self, path):
-        print('--- disconnected from %s ---' % path)
         if path in self._devices_connected:
             self._devices_connected.remove(path)
             self._connections_updated()
 
     def _add_connected_device(self, path):
-        print('--- connected to %s ---' % path)
         self._devices_connected.add(path)
         self._connections_updated()
 
     def _connections_updated(self):
         if self._devices_connected:
+            self._disable_interfaces()
             self._adapter_manager.set_discoverable(False)
         else:
+            self._enable_interfaces()
             self._adapter_manager.set_discoverable(True)
+
+    def _disable_interfaces(self):
+        if self._interfaces_are_up is False:
+            return
+
+        for interface in self._interfaces_to_disable:
+            interface.down()
+
+        self._interfaces_are_up = False
+
+    def _enable_interfaces(self):
+        if self._interfaces_are_up is True:
+            return
+
+        for interface in self._interfaces_to_disable:
+            interface.up()
+
+        self._interfaces_are_up = True
 
 
 class MediaPlayerManager(ObjectManager):
@@ -237,11 +260,15 @@ class BluetoothManager(object):
         bt_name = config['btaudio']['name']
 
         self._adapter_manager = AdapterManager(self._bus, bt_name)
+        self._device_manager = DeviceManager(
+            self._bus, self._adapter_manager,
+            config['btaudio']['interfaces_to_disable'],
+        )
         self._media_player_manager = MediaPlayerManager(self._bus, core)
 
         self.managers = [
             self._adapter_manager,
-            DeviceManager(self._bus, self._adapter_manager),
+            self._device_manager,
             self._media_player_manager,
         ]
 

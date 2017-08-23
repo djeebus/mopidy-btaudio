@@ -1,6 +1,6 @@
 import pkg_resources
 
-from mopidy.config import String
+from mopidy.config import Boolean, String, List
 from mopidy.ext import Extension
 
 from . import __version__
@@ -20,6 +20,7 @@ class BtAudioExtension(Extension):
         schema = super(BtAudioExtension, self).get_config_schema()
         schema['name'] = String()
         schema['pin'] = String()
+        schema['interfaces_to_disable'] = List(optional=True)
         return schema
 
     def setup(self, registry):
