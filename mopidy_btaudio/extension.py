@@ -25,3 +25,6 @@ class BtAudioExtension(Extension):
     def setup(self, registry):
         from .bt_audio import BtAudioController
         registry.add('frontend', BtAudioController)
+
+        from .bt_rpc import BtRpcServer
+        registry.add('frontend', BtRpcServer)

@@ -70,7 +70,6 @@ class AdapterManager(ObjectManager):
         self.configure_adapter(dbus_object)
 
     def configure_adapter(self, dbus_object):
-        print('--- configuring adapter ---')
         int_ob = dbus.Interface(dbus_object, dbus_properties_interface_name)
 
         int_ob.Set(self.interface, 'Alias', self.name)
@@ -132,10 +131,13 @@ class DeviceManager(ObjectManager):
             return
 
         for dbus_ob in self.objects.values():
+            prop_ob = dbus.Interface(dbus_ob, dbus_properties_interface_name)
+            if not prop_ob.Get(self.interface, 'Paired'):
+                continue
+
             int_ob = dbus.Interface(dbus_ob, self.interface)
 
             try:
-                print('--- connecting to %s ---' % dbus_ob.object_path)
                 int_ob.Connect()
             except dbus.DBusException as e:
                 dbus_name = e.get_dbus_name()
@@ -148,13 +150,11 @@ class DeviceManager(ObjectManager):
                 raise
 
     def _remove_connected_device(self, path):
-        print('--- disconnected from %s ---' % path)
         if path in self._devices_connected:
             self._devices_connected.remove(path)
             self._connections_updated()
 
     def _add_connected_device(self, path):
-        print('--- connected to %s ---' % path)
         self._devices_connected.add(path)
         self._connections_updated()
 
