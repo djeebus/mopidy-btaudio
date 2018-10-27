@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pykka
+import struct
 import threading
 
 from mopidy.core import Core
@@ -129,7 +130,9 @@ class BluetoothServer(dbus.service.Object):
         )
 
     def read_cb(self, fd, conditions):
-        data = os.read(fd, 1024).strip('\0')
+        data = os.read(fd, 4)
+        size, = struct.unpack('!I', data)
+        data = os.read(fd, size)
 
         response = self.jsonrpc.handle_json(data)
         if response:
@@ -147,4 +150,10 @@ class BluetoothServer(dbus.service.Object):
                 self.disconnect(path)
 
     def write_cb(self, fd, value):
-        os.write(fd, value.encode('utf-8'))
+        data = value.encode('utf-8')
+        os.write(fd, to_msg_size(data) + data)
+
+
+def to_msg_size(data):
+    count = len(data)
+    return struct.pack('!I', count)
