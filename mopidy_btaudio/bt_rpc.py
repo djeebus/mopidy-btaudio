@@ -112,6 +112,7 @@ class BluetoothServer(dbus.service.Object):
         self.disconnect(path)
 
     def disconnect(self, path):
+        log.info('disconnecting: %s', path)
         if path in self.fds:
             os.close(self.fds[path])
             del self.fds[path]
@@ -120,24 +121,22 @@ class BluetoothServer(dbus.service.Object):
         "org.bluez.Profile1", in_signature="oha{sv}", out_signature="",
     )
     def NewConnection(self, path, fd, properties):
+        log.info('NewConnection: %s', path)
         fd = fd.take()
         self.fds[path] = fd
         gi.repository.GObject.io_add_watch(
             fd,
-            gi.repository.GObject.PRIORITY_DEFAULT,
+            gi.repository.GObject.PRIORITY_DEFAULT,  # condition
             gi.repository.GObject.IO_IN | gi.repository.GObject.IO_PRI,
             self.read_cb,
         )
 
     def read_cb(self, fd, conditions):
+        log.info('read_cb: %s', fd)
         data = os.read(fd, 4)
-        log.info('bytes read: %r', data)
-
         size, = struct.unpack('!I', data)
-        log.info('size: %r', size)
 
         data = os.read(fd, size)
-        log.info('data: %r', data)
 
         response = self.jsonrpc.handle_json(data)
         if response:
@@ -155,6 +154,7 @@ class BluetoothServer(dbus.service.Object):
                 self.disconnect(path)
 
     def write_cb(self, fd, value):
+        log.info('write_cb: %s', fd)
         data = value.encode('utf-8')
         os.write(fd, to_msg_size(data) + data)
 
