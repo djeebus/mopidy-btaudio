@@ -1,3 +1,4 @@
+import collections
 import dbus
 import dbus.exceptions
 import dbus.service
@@ -99,11 +100,17 @@ class SerialPort(object):
             log.exception('failed to unregister profile')
 
 
+class ConnectionInfo(object):
+    def __init__(self, fd):
+        self.fd = fd
+        self.msg_len = None
+
+
 class BluetoothServer(dbus.service.Object):
     def __init__(self, core, *args, **kwargs):
         super(BluetoothServer, self).__init__(*args, **kwargs)
-        self.fds = dict()
         self.jsonrpc = make_jsonrpc_wrapper(core)
+        self._connections_by_path = collections.defaultdict(list)
 
     @dbus.service.method('org.bluez.Profile1',
                          in_signature='o',
@@ -113,17 +120,21 @@ class BluetoothServer(dbus.service.Object):
 
     def disconnect(self, path):
         log.info('disconnecting: %s', path)
-        if path in self.fds:
-            os.close(self.fds[path])
-            del self.fds[path]
+        for info in self._connections_by_path[path]:
+            os.close(info.fd)
+            del info.fd
+        del self._connections_by_path[path]
 
     @dbus.service.method(
         "org.bluez.Profile1", in_signature="oha{sv}", out_signature="",
     )
     def NewConnection(self, path, fd, properties):
         log.info('NewConnection: %s', path)
+
         fd = fd.take()
-        self.fds[path] = fd
+        info = ConnectionInfo(fd=fd)
+        self._connections_by_path[path].append(info)
+
         gi.repository.GObject.io_add_watch(
             fd,
             gi.repository.GObject.PRIORITY_DEFAULT,  # condition
@@ -132,11 +143,8 @@ class BluetoothServer(dbus.service.Object):
         )
 
     def read_cb(self, fd, conditions):
-        log.info('read_cb: %s', fd)
         data = os.read(fd, 4)
         size, = struct.unpack('!I', data)
-
-        log.info('reading %s bytes [%s]', size, data)
         data = os.read(fd, size)
 
         response = self.jsonrpc.handle_json(data)
@@ -146,16 +154,19 @@ class BluetoothServer(dbus.service.Object):
         return True
 
     def broadcast(self, value):
-        items = list(self.fds.items())
-        for path, fd in items:
+        items = list(self._connections_by_path.items())
+        for path, infos in items:
             try:
-                self.write_cb(fd, value)
+                for info in infos:
+                    self.write_cb(info.fd, value)
             except:
-                log.warning("Failed to write to %s, disconnecting" % path)
+                log.warning(
+                    "Failed to write to %s, disconnecting", path,
+                    exc_info=True,
+                )
                 self.disconnect(path)
 
     def write_cb(self, fd, value):
-        log.info('write_cb: %s', fd)
         data = value.encode('utf-8')
         os.write(fd, to_msg_size(data) + data)
 
