@@ -136,6 +136,7 @@ class BluetoothServer(dbus.service.Object):
         data = os.read(fd, 4)
         size, = struct.unpack('!I', data)
 
+        log.info('reading %s bytes [%s]', size, data)
         data = os.read(fd, size)
 
         response = self.jsonrpc.handle_json(data)
