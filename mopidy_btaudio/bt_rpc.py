@@ -3,6 +3,7 @@ import dbus
 import dbus.exceptions
 import dbus.service
 import gi.repository
+import io
 import json
 import logging
 import os
@@ -143,8 +144,11 @@ class BluetoothServer(dbus.service.Object):
         )
 
     def read_cb(self, fd, conditions):
+        log.debug('--> #%s: reading header' % fd)
         data = os.read(fd, 4)
         size, = struct.unpack('!I', data)
+        log.debug('--> #%s: reading %s bytes' % (fd, size))
+
         data = os.read(fd, size)
 
         response = self.jsonrpc.handle_json(data)
@@ -168,7 +172,14 @@ class BluetoothServer(dbus.service.Object):
 
     def write_cb(self, fd, value):
         data = value.encode('utf-8')
-        os.write(fd, to_msg_size(data) + data)
+        buf = io.BytesIO()
+        buf.write(to_msg_size(data))
+        buf.write(data)
+
+        data = buf.getvalue()
+        log.debug('<-- #%s: sending %s bytes' % (fd, len(data)))
+        os.write(fd, data)
+        return True
 
 
 def to_msg_size(data):
