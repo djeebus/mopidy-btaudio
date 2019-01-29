@@ -1,3 +1,4 @@
+import base64
 import collections
 import dbus
 import dbus.exceptions
@@ -14,12 +15,27 @@ import threading
 from mopidy.core import Core
 from mopidy.core import CoreListener
 from mopidy.http.handlers import make_jsonrpc_wrapper
+from mopidy.internal import path
 from mopidy.models.serialize import ModelJSONEncoder
 
 log = logging.getLogger(__name__)
 
 
 class BtRpcServer(pykka.ThreadingActor, CoreListener):
+    @classmethod
+    def get_data_dir(cls, config):
+        """Get or create data directory for the extension.
+
+        Use this directory to store data that should be persistent.
+
+        :param config: the Mopidy config object
+        :returns: string
+        """
+        data_dir_path = bytes(os.path.join(config['core']['data_dir'],
+                                           'local-images'))
+        path.get_or_create_dir(data_dir_path)
+        return data_dir_path
+
     def __init__(self, config, core):
         pykka.ThreadingActor.__init__(self)
 
@@ -29,9 +45,15 @@ class BtRpcServer(pykka.ThreadingActor, CoreListener):
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self._mainloop = gi.repository.GObject.MainLoop()
 
+        if config['local-images']['image_dir']:
+            image_dir = config['local-images']['image_dir']
+        else:
+            image_dir = self.get_data_dir(config)
+
         self._spp = SerialPort(1)
         self._server = BluetoothServer(
             core,
+            image_dir,
             dbus.SystemBus(),
             self._spp.profile_path,
         )
@@ -107,10 +129,24 @@ class ConnectionInfo(object):
         self.msg_len = None
 
 
+class BtRpc:
+    def __init__(self, image_dir):
+        self.image_dir = image_dir
+
+    def get_image_data(self, uri):
+        uri = uri.lstrip('/images/')
+        path = os.path.join(self.image_dir, uri)
+        with open(path, 'rb') as fp:
+            data = fp.read()
+
+        return base64.b64encode(data)
+
+
 class BluetoothServer(dbus.service.Object):
-    def __init__(self, core, *args, **kwargs):
+    def __init__(self, core, image_dir, *args, **kwargs):
         super(BluetoothServer, self).__init__(*args, **kwargs)
         self.jsonrpc = make_jsonrpc_wrapper(core)
+        self.jsonrpc.objects['btrpc'] = BtRpc(image_dir)
         self._connections_by_path = collections.defaultdict(list)
 
     @dbus.service.method('org.bluez.Profile1',
@@ -150,8 +186,10 @@ class BluetoothServer(dbus.service.Object):
         log.debug('--> #%s: reading %s bytes' % (fd, size))
 
         data = os.read(fd, size)
+        log.info('--> #%s: %s' % (fd, data))
 
         response = self.jsonrpc.handle_json(data)
+
         if response:
             self.write_cb(fd, response)
 
