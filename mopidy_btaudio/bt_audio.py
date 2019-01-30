@@ -72,9 +72,17 @@ class AdapterManager(ObjectManager):
     def configure_adapter(self, dbus_object):
         int_ob = dbus.Interface(dbus_object, dbus_properties_interface_name)
 
-        int_ob.Set(self.interface, 'Alias', self.name)
-        int_ob.Set(self.interface, 'Powered', True)
-        int_ob.Set(self.interface, 'Discoverable', True)
+        expected_props = [
+            ('Alias', self.name, self.name),
+            ('Powered', 1, True),
+            ('Discoverable', 1, True),
+        ]
+        actual_props = int_ob.GetAll(self.interface)
+
+        for key, expected, actual in expected_props:
+            if actual_props[key] != expected:
+                logger.info('%s: %s => %s' % (key, actual_props[key], actual))
+                int_ob.Set(self.interface, key, actual)
 
     def _stop(self):
         for path, dbus_object in self.objects.items():

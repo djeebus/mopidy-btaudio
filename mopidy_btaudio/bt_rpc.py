@@ -3,6 +3,7 @@ import collections
 import dbus
 import dbus.exceptions
 import dbus.service
+import functools
 import gi.repository
 import io
 import json
@@ -15,7 +16,7 @@ import threading
 from mopidy.core import Core
 from mopidy.core import CoreListener
 from mopidy.http.handlers import make_jsonrpc_wrapper
-from mopidy.internal import path
+from mopidy.internal.path import get_or_create_dir
 from mopidy.models.serialize import ModelJSONEncoder
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class BtRpcServer(pykka.ThreadingActor, CoreListener):
         """
         data_dir_path = bytes(os.path.join(config['core']['data_dir'],
                                            'local-images'))
-        path.get_or_create_dir(data_dir_path)
+        get_or_create_dir(data_dir_path)
         return data_dir_path
 
     def __init__(self, config, core):
@@ -110,7 +111,7 @@ class SerialPort(object):
             self.manager.RegisterProfile(
                 self.profile_path, self.uuid, self.opts,
             )
-        except dbus.exceptions.DBusException:
+        except:
             log.exception('failed to register profile')
             return False
 
@@ -119,7 +120,7 @@ class SerialPort(object):
     def unregister(self):
         try:
             self.manager.UnregisterProfile(self.profile_path)
-        except dbus.exceptions.DBusException:
+        except:
             log.exception('failed to unregister profile')
 
 
@@ -127,6 +128,7 @@ class ConnectionInfo(object):
     def __init__(self, fd):
         self.fd = fd
         self.msg_len = None
+        self.write_lock = threading.Lock()
 
 
 class BtRpc:
@@ -159,16 +161,16 @@ class BluetoothServer(dbus.service.Object):
         log.info('disconnecting: %s', path)
         for info in self._connections_by_path[path]:
             os.close(info.fd)
-            del info.fd
         del self._connections_by_path[path]
 
     @dbus.service.method(
         "org.bluez.Profile1", in_signature="oha{sv}", out_signature="",
     )
     def NewConnection(self, path, fd, properties):
-        log.info('NewConnection: %s', path)
-
         fd = fd.take()
+
+        log.info('NewConnection: %s (#%s)', path, fd)
+
         info = ConnectionInfo(fd=fd)
         self._connections_by_path[path].append(info)
 
@@ -176,48 +178,79 @@ class BluetoothServer(dbus.service.Object):
             fd,
             gi.repository.GObject.PRIORITY_DEFAULT,  # condition
             gi.repository.GObject.IO_IN | gi.repository.GObject.IO_PRI,
-            self.read_cb,
+            functools.partial(self.read_cb, path),
         )
 
-    def read_cb(self, fd, conditions):
-        log.debug('--> #%s: reading header' % fd)
-        data = os.read(fd, 4)
-        size, = struct.unpack('!I', data)
-        log.debug('--> #%s: reading %s bytes' % (fd, size))
+    def read_cb(self, path, fd, conditions):
+        try:
+            log.debug('--> #%s: reading header' % fd)
+            data = _io_retry(os.read, fd, 4)
 
-        data = os.read(fd, size)
-        log.info('--> #%s: %s' % (fd, data))
+            size, = struct.unpack('!I', data)
+            log.debug('--> #%s: reading %s bytes' % (fd, size))
+
+            data = _io_retry(os.read, fd, size)
+            log.debug('--> #%s: %s' % (fd, data))
+        except:
+            log.exception('--> #%s: error reading, closing' % fd)
+            self.disconnect(path)
+            return False
 
         response = self.jsonrpc.handle_json(data)
 
         if response:
-            self.write_cb(fd, response)
+            self.write_cb(path, fd, response)
 
         return True
 
     def broadcast(self, value):
+        log.info('broadcasting %s' % (value))
         items = list(self._connections_by_path.items())
         for path, infos in items:
-            try:
-                for info in infos:
-                    self.write_cb(info.fd, value)
-            except:
-                log.warning(
-                    "Failed to write to %s, disconnecting", path,
-                    exc_info=True,
-                )
-                self.disconnect(path)
+            for info in infos:
+                self.write_cb(path, info.fd, value)
 
-    def write_cb(self, fd, value):
-        data = value.encode('utf-8')
-        buf = io.BytesIO()
-        buf.write(to_msg_size(data))
-        buf.write(data)
+    def write_cb(self, path, fd, value):
+        infos = self._connections_by_path.get(path, [])
+        for info in infos:
+            if info.fd == fd:
+                break
+        else:
+            log.warning('--> #%s: no info, bailing' % fd)
+            return
 
-        data = buf.getvalue()
-        log.debug('<-- #%s: sending %s bytes' % (fd, len(data)))
-        os.write(fd, data)
-        return True
+        try:
+            info.write_lock.acquire()
+            data = value.encode('utf-8')
+            buf = io.BytesIO()
+            buf.write(to_msg_size(data))
+            buf.write(data)
+
+            remaining = buf.getvalue()
+
+            while remaining:
+                try:
+                    log.debug('<-- #%s: sending %s bytes' % (fd, len(remaining)))
+                    written = _io_retry(os.write, fd, remaining)
+                    log.debug('<-- #%s: sent %s bytes' % (fd, written))
+                    remaining = remaining[written:]
+                except:
+                    log.exception('<-- #%s: failed to write, closing socket' % fd)
+                    self.disconnect(path)
+                    return
+        finally:
+            info.write_lock.release()
+
+
+def _io_retry(func, *args):
+    while True:
+        try:
+            return func(*args)
+        except OSError as e:
+            if e.errno == 11:
+                continue
+
+            raise
 
 
 def to_msg_size(data):
