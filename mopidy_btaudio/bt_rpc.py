@@ -22,6 +22,17 @@ from mopidy.models.serialize import ModelJSONEncoder
 log = logging.getLogger(__name__)
 
 
+def report_exceptions(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except:
+            log.exception("trapped exception")
+
+    return wrapper
+
+
 class BtRpcServer(pykka.ThreadingActor, CoreListener):
     @classmethod
     def get_data_dir(cls, config):
@@ -73,13 +84,16 @@ class BtRpcServer(pykka.ThreadingActor, CoreListener):
         self._mainloop.quit()
         self._spp.unregister()
 
+    @report_exceptions
     def on_start(self):
         self._thread.start()
 
+    @report_exceptions
     def on_stop(self):
         self.shutdown()
         self._thread.join(1)
 
+    @report_exceptions
     def on_event(self, name, **data):
         event = data
         event['event'] = name

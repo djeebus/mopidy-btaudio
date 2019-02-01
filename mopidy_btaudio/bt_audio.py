@@ -73,10 +73,15 @@ class AdapterManager(ObjectManager):
         int_ob = dbus.Interface(dbus_object, dbus_properties_interface_name)
 
         expected_props = [
-            ('Alias', self.name, self.name),
             ('Powered', 1, True),
             ('Discoverable', 1, True),
         ]
+
+        if self.name:
+            expected_props.insert(
+                0, ('Alias', self.name, self.name),
+            )
+
         actual_props = int_ob.GetAll(self.interface)
 
         for key, expected, actual in expected_props:
@@ -242,7 +247,7 @@ class BluetoothManager(object):
     def __init__(self, config, core):
         self._bus = dbus.SystemBus()
 
-        bt_name = config['btaudio']['name']
+        bt_name = config['btaudio'].get('name')
 
         self._adapter_manager = AdapterManager(self._bus, bt_name)
         self._media_player_manager = MediaPlayerManager(self._bus, core)

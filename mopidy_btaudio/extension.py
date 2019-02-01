@@ -18,7 +18,7 @@ class BtAudioExtension(Extension):
 
     def get_config_schema(self):
         schema = super(BtAudioExtension, self).get_config_schema()
-        schema['name'] = String()
+        schema['name'] = String(optional=True)
         schema['pin'] = String()
         return schema
 
