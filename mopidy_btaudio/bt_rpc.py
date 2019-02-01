@@ -12,6 +12,7 @@ import os
 import pykka
 import struct
 import threading
+import time
 
 from mopidy.core import Core
 from mopidy.core import CoreListener
@@ -27,6 +28,8 @@ def report_exceptions(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
+        except KeyboardInterrupt:
+            raise
         except:
             log.exception("trapped exception")
 
@@ -152,6 +155,9 @@ class BtRpc:
     def get_image_data(self, uri):
         uri = uri.lstrip('/images/')
         path = os.path.join(self.image_dir, uri)
+        if not os.path.exists(path):
+            return
+
         with open(path, 'rb') as fp:
             data = fp.read()
 
@@ -262,6 +268,7 @@ def _io_retry(func, *args):
             return func(*args)
         except OSError as e:
             if e.errno == 11:
+                time.sleep(.005)  # don't spin
                 continue
 
             raise
